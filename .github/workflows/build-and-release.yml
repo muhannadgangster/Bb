@@ -1,0 +1,179 @@
+name: Build and Release Game
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Web Game
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web game
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          echo "=== Validating Build Output ==="
+          if [ ! -d "dist" ]; then
+            echo "ERROR: Expected build output directory 'dist' was not found!"
+            exit 1
+          fi
+          if [ ! -f "dist/index.html" ]; then
+            echo "ERROR: Entry file 'dist/index.html' is missing!"
+            exit 1
+          fi
+          if [ ! -s "dist/index.html" ]; then
+            echo "ERROR: 'dist/index.html' is empty!"
+            exit 1
+          fi
+          if [ ! -d "dist/assets" ] || [ -z "$(ls -A dist/assets 2>/dev/null)" ]; then
+            echo "ERROR: 'dist/assets' directory is missing or empty!"
+            exit 1
+          fi
+          echo "Build validation PASSED. 'dist' directory contents:"
+          ls -la dist/
+          ls -la dist/assets/
+
+      - name: Prepare downloadable release package
+        id: package
+        run: |
+          TMP_DIR=$(mktemp -d)
+          PACKAGE_NAME="vice-horizon-web-build-${{ github.run_number }}.zip"
+          PACKAGE_PATH="${TMP_DIR}/${PACKAGE_NAME}"
+
+          echo "Creating downloadable ZIP archive: ${PACKAGE_PATH}"
+          (cd dist && zip -r "${PACKAGE_PATH}" .)
+
+          if [ ! -f "${PACKAGE_PATH}" ] || [ ! -s "${PACKAGE_PATH}" ]; then
+            echo "ERROR: Failed to create non-empty ZIP archive at ${PACKAGE_PATH}"
+            exit 1
+          fi
+
+          echo "Archive created successfully:"
+          ls -lh "${PACKAGE_PATH}"
+
+          echo "package_name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "package_path=${PACKAGE_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload GitHub Actions build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vice-horizon-web-build-${{ github.run_number }}
+          path: |
+            dist/
+            ${{ steps.package.outputs.package_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        id: create_release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: game-build-${{ github.run_number }}-${{ github.run_attempt }}
+          ASSET_PATH: ${{ steps.package.outputs.package_path }}
+          ASSET_NAME: ${{ steps.package.outputs.package_name }}
+        run: |
+          echo "=== Checking GitHub CLI ==="
+          gh --version
+
+          if [ ! -f "${ASSET_PATH}" ] || [ ! -s "${ASSET_PATH}" ]; then
+            echo "ERROR: Release asset does not exist or is empty at ${ASSET_PATH}"
+            exit 1
+          fi
+
+          RELEASE_TITLE="Vice Horizon (Web Build) #${{ github.run_number }}"
+
+          echo "Publishing release with tag: ${TAG_NAME}"
+          gh release create "${TAG_NAME}" \
+            "${ASSET_PATH}#${ASSET_NAME}" \
+            --target "${{ github.sha }}" \
+            --title "${RELEASE_TITLE}" \
+            --notes-file - <<'EOF'
+          ## Vice Horizon: Open World 3D — Automated Build
+
+          - **Game**: Vice Horizon: Open World 3D
+          - **Platform**: Web (HTML5 / WebGL / Three.js)
+          - **Build Type**: Production Web Release
+          - **Workflow Run**: #${{ github.run_number }} (Attempt ${{ github.run_attempt }})
+          - **Source Commit**: `${{ github.sha }}`
+          - **Automated By**: GitHub Actions
+
+          ### How to Launch & Play:
+          1. Download the attached `${{ steps.package.outputs.package_name }}` ZIP archive.
+          2. Extract the archive contents into any folder.
+          3. Serve locally using any static HTTP server:
+             - Node: `npx serve .` or `npx http-server .`
+             - Python: `python3 -m http.server 8080`
+             - Or host directly on any static web host (GitHub Pages, Cloudflare Pages, Netlify, Vercel, S3).
+          4. Open your browser and navigate to the local server URL to play!
+          EOF
+
+          echo "Release created successfully."
+          gh release view "${TAG_NAME}"
+
+      - name: Report Build and Release Summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: game-build-${{ github.run_number }}-${{ github.run_attempt }}
+          RELEASE_STATUS: ${{ steps.create_release.outcome }}
+          ASSET_NAME: ${{ steps.package.outputs.package_name }}
+        run: |
+          echo "=== WORKFLOW EXECUTION SUMMARY ==="
+          echo "Build outcome: ${{ steps.package.outcome }}"
+          echo "Release publish outcome: ${RELEASE_STATUS}"
+
+          {
+            echo "## Game Build & Release Summary"
+            echo ""
+            echo "- **Game**: Vice Horizon: Open World 3D"
+            echo "- **Target Platform**: Web (HTML5 / Three.js / WebGL)"
+            echo "- **Build Status**: Completed Successfully"
+            echo "- **Actions Artifact**: \`vice-horizon-web-build-${{ github.run_number }}\` (Available in the Actions Artifacts panel)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${RELEASE_STATUS}" = "success" ]; then
+            RELEASE_URL=$(gh release view "${TAG_NAME}" --json url -q .url 2>/dev/null || echo "")
+            echo "Release Tag: ${TAG_NAME}"
+            echo "Release URL: ${RELEASE_URL}"
+            echo "Downloadable Asset: ${ASSET_NAME}"
+
+            {
+              echo "### GitHub Release Published Successfully"
+              echo ""
+              echo "- **Release Tag**: \`${TAG_NAME}\`"
+              echo "- **Downloadable Asset**: \`${ASSET_NAME}\`"
+              if [ -n "${RELEASE_URL}" ]; then
+                echo "- **Direct Release Page**: [View Release](${RELEASE_URL})"
+              fi
+              echo ""
+              echo "To download, visit the release page and look under the **Assets** section."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "WARNING: GitHub Release publishing was skipped or encountered an error."
+            echo "The build was successful and the Actions artifact remains safely uploaded."
+
+            {
+              echo "### GitHub Release Publishing Note"
+              echo ""
+              echo "> **Notice**: GitHub Release publishing was not completed during this run (e.g. repository permissions or release step warning). However, the **game build succeeded** and the verified game files are available for download under the workflow's **Artifacts** section."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,0 +1,6 @@
+{
+  "name": "Vice Horizon: Open World 3D",
+  "description": "A realistic AAA-grade 3D open-world action game featuring sprawling city districts, driving, missions, combat, living AI traffic and pedestrians, dynamic day-night cycles, and customizable characters.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
